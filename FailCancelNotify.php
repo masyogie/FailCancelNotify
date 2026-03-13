@@ -1,46 +1,253 @@
 <?php
 /**
- * WooCommerce Custom Email Notifications for Cancelled and Failed Orders
+ * Plugin Name: FailCancelNotify
+ * Plugin URI: https://github.com/masyogie/FailCancelNotify
+ * Description: Send email notifications to customers for cancelled or failed WooCommerce orders
+ * Version: 2.0.0
+ * Author: masyogie
+ * Requires PHP: 7.4
+ * Requires at least: 5.0
+ * WC requires at least: 3.0
+ * WC tested up to: 8.0
+ * License: MIT
+ * Text Domain: fail-cancel-notify
  *
  * This snippet sends email notifications directly to customers when their orders are either cancelled or failed,
  * bypassing the default admin notifications of WooCommerce.
  */
 
-// Hook into WooCommerce order status changes for 'cancelled' and 'failed' orders.
-add_action('woocommerce_order_status_cancelled', 'send_customer_email_on_status_change', 10, 2);
-add_action('woocommerce_order_status_failed', 'send_customer_email_on_status_change', 10, 2);
+if (!defined('ABSPATH')) {
+    exit; // Exit if accessed directly
+}
+
+/**
+ * Check if WooCommerce is active
+ */
+function fcn_is_woocommerce_active() {
+    return class_exists('WooCommerce') && function_exists('WC');
+}
+
+/**
+ * Get the minimum required WooCommerce version
+ *
+ * @return string
+ */
+function fcn_get_min_wc_version() {
+    return '3.0';
+}
+
+/**
+ * Check if WooCommerce version is compatible
+ *
+ * @return bool
+ */
+function fcn_is_wc_version_compatible() {
+    if (!fcn_is_woocommerce_active()) {
+        return false;
+    }
+    
+    $wc_version = WC()->version;
+    return version_compare($wc_version, fcn_get_min_wc_version(), '>=');
+}
+
+/**
+ * Log messages for debugging
+ *
+ * @param string $message The message to log
+ * @param string $level   Log level (info, error, warning, debug)
+ * @return void
+ */
+function fcn_log($message, $level = 'info') {
+    if (function_exists('wc_get_logger')) {
+        $logger = wc_get_logger();
+        $context = ['source' => 'fail-cancel-notify'];
+        
+        switch ($level) {
+            case 'error':
+                $logger->error($message, $context);
+                break;
+            case 'warning':
+                $logger->warning($message, $context);
+                break;
+            case 'debug':
+                $logger->debug($message, $context);
+                break;
+            default:
+                $logger->info($message, $context);
+        }
+    }
+}
+
+/**
+ * Map order status to WooCommerce email class keys
+ *
+ * @return array
+ */
+function fcn_get_email_map() {
+    return [
+        'cancelled' => 'WC_Email_Cancelled_Order',
+        'failed'    => 'WC_Email_Failed_Order',
+    ];
+}
 
 /**
  * Handles the email notifications for order status changes.
  *
- * @param int $order_id The ID of the order.
- * @param WC_Order $order The order object.
+ * @param int      $order_id The ID of the order.
+ * @param WC_Order $order    The order object.
+ * @return bool True if email was sent successfully, false otherwise
  */
-function send_customer_email_on_status_change($order_id, $order) {
-    $wc_emails = WC()->mailer()->get_emails(); // Retrieve instances of all WC_Emails objects
-    $customer_email = $order->get_billing_email(); // Get the customer's email address
-
-    // Handle the 'cancelled' order status
-    if ($order->get_status() == 'cancelled') {
-        // Save the original recipient
-        $original_recipient = $wc_emails['WC_Email_Cancelled_Order']->recipient;
-
-        $wc_emails['WC_Email_Cancelled_Order']->recipient = $customer_email;
-        $wc_emails['WC_Email_Cancelled_Order']->trigger($order_id);
-
-        // Reset the recipient to the original
-        $wc_emails['WC_Email_Cancelled_Order']->recipient = $original_recipient;
+function fcn_send_customer_email_on_status_change($order_id, $order) {
+    // Check WooCommerce compatibility
+    if (!fcn_is_wc_version_compatible()) {
+        fcn_log('WooCommerce is not active or version is not compatible', 'error');
+        return false;
     }
-    // Handle the 'failed' order status
-    elseif ($order->get_status() == 'failed') {
-        // Save the original recipient
-        $original_recipient = $wc_emails['WC_Email_Failed_Order']->recipient;
-
-        $wc_emails['WC_Email_Failed_Order']->recipient = $customer_email;
-        $wc_emails['WC_Email_Failed_Order']->trigger($order_id);
-
-        // Reset the recipient to the original
-        $wc_emails['WC_Email_Failed_Order']->recipient = $original_recipient;
+    
+    // Validate order object
+    if (!($order instanceof WC_Order)) {
+        fcn_log("Invalid order object for order ID: {$order_id}", 'error');
+        return false;
+    }
+    
+    // Get order status (without 'wc-' prefix)
+    $order_status = $order->get_status();
+    
+    // Get email map
+    $email_map = fcn_get_email_map();
+    
+    // Check if this status is handled
+    if (!isset($email_map[$order_status])) {
+        fcn_log("Order status '{$order_status}' is not handled by this plugin", 'debug');
+        return false;
+    }
+    
+    // Get customer email
+    $customer_email = $order->get_billing_email();
+    
+    // Validate email format
+    if (empty($customer_email) || !is_email($customer_email)) {
+        fcn_log("Invalid or empty email address for order #{$order_id}", 'warning');
+        return false;
+    }
+    
+    // Sanitize email
+    $customer_email = sanitize_email($customer_email);
+    
+    // Get WooCommerce mailer instance
+    try {
+        $mailer = WC()->mailer();
+        if (!is_object($mailer)) {
+            fcn_log('Failed to get WooCommerce mailer instance', 'error');
+            return false;
+        }
+        
+        $wc_emails = $mailer->get_emails();
+    } catch (Exception $e) {
+        fcn_log('Exception while getting WooCommerce emails: ' . $e->getMessage(), 'error');
+        return false;
+    }
+    
+    // Validate emails array
+    if (!is_array($wc_emails) || empty($wc_emails)) {
+        fcn_log('No WooCommerce emails found', 'error');
+        return false;
+    }
+    
+    // Get the email class key
+    $email_key = $email_map[$order_status];
+    
+    // Check if email class exists
+    if (!isset($wc_emails[$email_key]) || !is_object($wc_emails[$email_key])) {
+        fcn_log("Email class '{$email_key}' not found in WooCommerce emails", 'warning');
+        return false;
+    }
+    
+    $email = $wc_emails[$email_key];
+    
+    // Check if email is enabled
+    if (method_exists($email, 'is_enabled') && !$email->is_enabled()) {
+        fcn_log("Email type '{$email_key}' is disabled", 'info');
+        return false;
+    }
+    
+    // Allow developers to bypass this notification
+    $should_send = apply_filters('fcn_should_send_notification', true, $order_id, $order, $email_key);
+    
+    if (!$should_send) {
+        fcn_log("Notification for order #{$order_id} bypassed via filter", 'info');
+        return false;
+    }
+    
+    // Send the email
+    try {
+        // Store original recipient
+        $original_recipient = isset($email->recipient) ? $email->recipient : '';
+        
+        // Set customer as recipient
+        $email->recipient = $customer_email;
+        
+        // Allow developers to customize email before sending
+        do_action('fcn_before_send_email', $email, $order_id, $order);
+        
+        // Trigger the email
+        if (method_exists($email, 'trigger')) {
+            $email->trigger($order_id);
+        } else {
+            fcn_log("Email class '{$email_key}' does not have a trigger method", 'error');
+            return false;
+        }
+        
+        // Restore original recipient
+        $email->recipient = $original_recipient;
+        
+        // Log success
+        fcn_log("Email sent successfully to {$customer_email} for order #{$order_id} (status: {$order_status})");
+        
+        // Allow developers to hook after email is sent
+        do_action('fcn_after_send_email', $order_id, $order, $customer_email);
+        
+        return true;
+        
+    } catch (Exception $e) {
+        fcn_log('Exception while sending email: ' . $e->getMessage(), 'error');
+        
+        // Try to restore recipient even on failure
+        if (isset($original_recipient)) {
+            $email->recipient = $original_recipient;
+        }
+        
+        return false;
     }
 }
 
+/**
+ * Initialize the plugin
+ *
+ * @return void
+ */
+function fcn_init() {
+    // Check WooCommerce compatibility on init
+    if (!fcn_is_wc_version_compatible()) {
+        add_action('admin_notices', function() {
+            echo '<div class="error"><p>';
+            echo '<strong>FailCancelNotify:</strong> requires WooCommerce ' . fcn_get_min_wc_version() . ' or higher to be active.';
+            echo '</p></div>';
+        });
+        return;
+    }
+    
+    // Hook into WooCommerce order status changes
+    add_action('woocommerce_order_status_cancelled', 'fcn_send_customer_email_on_status_change', 10, 2);
+    add_action('woocommerce_order_status_failed', 'fcn_send_customer_email_on_status_change', 10, 2);
+}
+
+// Initialize plugin after WooCommerce is loaded
+add_action('woocommerce_loaded', 'fcn_init');
+
+// Fallback initialization if woocommerce_loaded doesn't fire
+add_action('init', function() {
+    if (fcn_is_woocommerce_active() && !has_action('woocommerce_order_status_cancelled', 'fcn_send_customer_email_on_status_change')) {
+        fcn_init();
+    }
+}, 20);
