@@ -100,6 +100,17 @@ add_action('fcn_after_send_email', function($order_id, $order, $customer_email) 
 }, 10, 3);
 ```
 
+#### `fcn_rate_limit_period`
+
+Customize the rate limit cooldown period.
+
+```php
+// Set rate limit to 5 minutes (300 seconds)
+add_filter('fcn_rate_limit_period', function($seconds) {
+    return 300;
+});
+```
+
 ## Debugging
 
 FailCancelNotify uses the WooCommerce logging system. You can view logs at:
@@ -119,6 +130,11 @@ Select the `fail-cancel-notify` log file to view all plugin activity including:
 3. **Order Object Validation** - Verifies order object is a valid `WC_Order` instance
 4. **Direct Access Prevention** - Uses `ABSPATH` check to prevent direct file access
 5. **Exception Handling** - Try-catch blocks to prevent fatal errors
+6. **Order ID Validation** - Uses `absint()` to validate and sanitize order IDs
+7. **XSS Prevention** - Uses `esc_html()` for admin notice output
+8. **Email Header Injection Prevention** - Checks for CRLF characters in email
+9. **Rate Limiting** - Prevents email spam with transient-based cooldown (60s default)
+10. **Log Sanitization** - All log messages are sanitized to prevent log injection
 
 ## Performance Optimizations
 
@@ -128,6 +144,15 @@ Select the `fail-cancel-notify` log file to view all plugin activity including:
 4. **Original Recipient Restoration** - Ensures recipient is restored even on failure
 
 ## Changelog
+
+### 2.1.0
+- **Security Fix:** Added `esc_html()` to admin notice to prevent XSS
+- **Security Fix:** Added `absint()` validation for order_id parameter
+- **Security Fix:** Added email header injection check (CRLF detection)
+- **Security Fix:** Sanitized all log messages to prevent log injection
+- **Feature:** Added rate limiting to prevent email spam (60s cooldown by default)
+- **Feature:** Added `fcn_rate_limit_period` filter to customize cooldown
+- **Improvement:** Enhanced code documentation for security functions
 
 ### 2.0.0
 - Added comprehensive error handling with try-catch
